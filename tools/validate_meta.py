@@ -50,7 +50,7 @@ DECK_TYPE_KINDS = {"deck", "engine", "both"}
 PERIOD_RE               = re.compile(r"^\d{4}-\d{2}(-\d{2})?$")
 DATE_RE                 = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 RECORD_RE               = re.compile(r"^(\d+)-(\d+)-(\d+)$")
-LIST_HEADER_RE          = re.compile(r"^!(\d{4})\.(\d{2})\b$")
+LIST_HEADER_RE          = re.compile(r"^!(\d{4})\.(\d{2})\b")
 BARE_PASSCODE_RE        = re.compile(r"(?<!\w)\d{5,}(?!\w)")
 FORBIDDEN_NAME_CHARS    = set(";|&()#*!:")
 
