@@ -178,8 +178,8 @@ def check_text_mechanics(report: Report, rel: str, raw: bytes, *, require_bom: b
 def parse_lflist(text: str) -> Tuple[Optional[str], Dict[int, int], List[str]]:
     """Return (header line, {passcode: status}, problems)."""
     header = None
-    statuses = Dict[int, int] = {}
-    problems = List[str] = []
+    statuses: Dict[int, int] = {}
+    problems: List[str] = []
     for raw_line in text.splitlines():
         line = raw_line.strip()
         if not line:
