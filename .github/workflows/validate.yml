@@ -1,0 +1,98 @@
+name: Validate and bundle
+
+# Validation runs on every push and pull request. bundle.json is regenerated and
+# committed only on pushes to main, by the Actions bot. A push made with
+# GITHUB_TOKEN does not trigger workflows again.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'manifest.csv'
+      - 'deck_types.csv'
+      - 'decks/**'
+      - 'tools/**'
+      - '.github/workflows/validate.yml'
+  pull_request:
+    paths:
+      - 'manifest.csv'
+      - 'deck_types.csv'
+      - 'decks/**'
+      - 'tools/**'
+      - '.github/workflows/validate.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: validate-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Fetch the current SFFR list
+        id: lflist
+        continue-on-error: true
+        run: |
+          curl -sSfL --retry 3 --max-time 60 \
+            -o "$RUNNER_TEMP/sffr.lflist.conf" \
+            https://raw.githubusercontent.com/XGlitchy30/StungrayFluteCustoms/main/lflists/sffr.lflist.conf
+          wc -l "$RUNNER_TEMP/sffr.lflist.conf"
+
+      - name: Validate the repository
+        run: |
+          ARGS=""
+          if [ -f "$RUNNER_TEMP/sffr.lflist.conf" ]; then
+            ARGS="--live-lflist $RUNNER_TEMP/sffr.lflist.conf"
+          else
+            echo "::warning title=Passcode checks skipped::the current SFFR list could not be fetched"
+          fi
+          python3 tools/validate_meta.py --json validation.json $ARGS
+
+      - name: Check that the bundle builds
+        if: always()
+        run: python3 tools/build_bundle.py --out "$RUNNER_TEMP/bundle.json"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: validation-report
+          path: validation.json
+          if-no-files-found: ignore
+
+  bundle:
+    needs: validate
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Regenerate bundle.json
+        run: python3 tools/build_bundle.py --out bundle.json
+
+      - name: Commit it if it changed
+        run: |
+          if git diff --quiet -- bundle.json; then
+            echo "bundle.json unchanged"
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add bundle.json
+          git commit -m "Regenerate bundle.json for ${GITHUB_SHA:0:7}"
+          git push

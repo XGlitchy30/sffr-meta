@@ -1,18 +1,17 @@
 ﻿file;kind;date;event;event_type;placement;field_size;record;pilot;deck_type;engines;list_period;notes
-decks/2026-08/Staples.ydk;reference;2026-08-01;;;;;;;;;Format's staples collection as of August 2026
-decks/2026-07/Staples.ydk;reference;2026-07-01;;;;;;;;;Format's staples collection as of July 2026
-decks/2026-07/Constellar.ydk;tournament;2026-07-01;Visions of Clairvoyance Cup;Swiss;2;8;3-2-0;Sock;Constellar;;2026-07;;
-decks/2026-07/Shaddoll.ydk;tournament;2026-07-01;Leafplace Plaice Cup;Double-Elim;3;7;2-2-0;Ryuko;Shaddoll;;2026-07;;
-decks/2026-07/Gem-Knight.ydk;tournament;2026-07-01;Leafplace Plaice Cup;Double-Elim;5;7;1-2-0;Nova;Gem-Knight;;2026-07;;
-decks/2026-07/Millsect.ydk;tournament;2026-07-01;Leafplace Plaice Cup;Double-Elim;5;7;1-2-0;Sock;Millsect;;2026-07;;
-decks/2026-08/Fortune Fairy.ydk;community;2026-08-21;;;;;;Glitchy;Fortune Fairy;;2026-08;;
-decks/2026-08/Relinquished.ydk;community;2026-08-21;;;;;;Glitchy;Relinquished;;2026-08;;
-decks/2026-08/Kappa.ydk;community;2026-08-21;;;;;;Glitchy;Kappa;;2026-08;;
-decks/2026-08/Crystal Beast.ydk;community;2026-08-21;;;;;;Glitchy;Crystal Beast;;2026-08;;
-decks/2026-08/X-Saber.ydk;community;2026-08-21;;;;;;Glitchy;X-Saber;;2026-08;;
-decks/2026-08/Gigavise.ydk;community;2026-08-21;;;;;;Ryuko;Gigavise;;2026-08;;
-decks/2026-08/Union Synchro.ydk;community;2026-08-21;;;;;;Noa;Union Synchro;;2026-08;;
-decks/2026-07/Gravekeepers.ydk;tournament;2026-08-21;Prototype Cup;Double-Elim;4;6;2-2-0;Aurora;Gravekeepers;;2026-08;;
-decks/2026-07/Spirit.ydk;tournament;2026-08-21;Prototype Cup;Double-Elim;1;6;5-1-0;Riku;Spirit;;2026-08;;
-decks/2026-07/Sword Fish Control.ydk;tournament;2026-08-21;Prototype Cup;Double-Elim;5;6;0-2-0;Glitchy;Sword Fish Control;;2026-08;;
-decks/2026-07/Pendulum 4-Axis.ydk;tournament;2026-08-21;Prototype Cup;Double-Elim;3;6;2-2-0;Sock;Pendulum 4-Axis;;2026-08;;
+decks/2026-08/Staples.ydk;reference;2026-08-01;;;;;;;;;;Format's staples collection as of August 2026
+decks/2026-03/Constellar.ydk;tournament;2026-03-06;Visions of Clairvoyance Cup;Swiss;2;8;3-2-0;Sock;Constellar;;2026-03;
+decks/2026-07/Shaddoll.ydk;tournament;2026-07-01;Leafplace Plaice Cup;Double-Elim;3;7;2-2-0;Ryuko;Shaddoll;;2026-07;
+decks/2026-07/Gem-Knight.ydk;tournament;2026-07-01;Leafplace Plaice Cup;Double-Elim;5;7;1-2-0;Nova;Gem-Knight;;2026-07;
+decks/2026-07/Millsect.ydk;tournament;2026-07-01;Leafplace Plaice Cup;Double-Elim;5;7;1-2-0;Sock;Millsect;;2026-07;
+decks/2026-08/Fortune Fairy.ydk;community;2026-08-21;;;;;;Glitchy;Fortune Fairy;;2026-08;
+decks/2026-08/Relinquished.ydk;community;2026-08-21;;;;;;Glitchy;Relinquished;;2026-08;
+decks/2026-08/Kappa.ydk;community;2026-08-21;;;;;;Glitchy;Kappa;;2026-08;
+decks/2026-08/Crystal Beast.ydk;community;2026-08-21;;;;;;Glitchy;Crystal Beast;;2026-08;
+decks/2026-08/X-Saber.ydk;community;2026-08-21;;;;;;Glitchy;X-Saber;;2026-08;
+decks/2026-08/Gigavise.ydk;community;2026-08-21;;;;;;Ryuko;Gigavise;;2026-08;
+decks/2026-08/Union Synchro.ydk;community;2026-08-21;;;;;;Noa;Union Synchro;;2026-08;
+decks/2026-08/Gravekeepers.ydk;tournament;2026-08-21;Prototype Cup;Double-Elim;4;6;2-2-0;Aurora;Gravekeepers;;2026-08;
+decks/2026-08/Spirit.ydk;tournament;2026-08-21;Prototype Cup;Double-Elim;1;6;5-1-0;Riku;Spirit;;2026-08;
+decks/2026-08/Sword Fish Control.ydk;tournament;2026-08-21;Prototype Cup;Double-Elim;5;6;0-2-0;Glitchy;Sword Fish Control;;2026-08;
+decks/2026-08/Pendulum 4-Axis.ydk;tournament;2026-08-21;Prototype Cup;Double-Elim;3;6;2-2-0;Sock;Pendulum 4-Axis;;2026-08;
