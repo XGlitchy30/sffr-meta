@@ -87,12 +87,12 @@ jobs:
 
       - name: Commit it if it changed
         run: |
-          if git diff --quiet -- bundle.json; then
+          git add bundle.json
+          if git diff --cached --quiet -- bundle.json; then
             echo "bundle.json unchanged"
             exit 0
           fi
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add bundle.json
           git commit -m "Regenerate bundle.json for ${GITHUB_SHA:0:7}"
           git push
