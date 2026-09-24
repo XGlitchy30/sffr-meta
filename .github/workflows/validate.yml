@@ -7,19 +7,11 @@ name: Validate and bundle
 on:
   push:
     branches: [main]
-    paths:
-      - 'manifest.csv'
-      - 'deck_types.csv'
-      - 'decks/**'
-      - 'tools/**'
-      - '.github/workflows/validate.yml'
+    paths-ignore:
+      - 'bundle.json'
   pull_request:
-    paths:
-      - 'manifest.csv'
-      - 'deck_types.csv'
-      - 'decks/**'
-      - 'tools/**'
-      - '.github/workflows/validate.yml'
+    paths-ignore:
+      - 'bundle.json'
   workflow_dispatch:
 
 permissions:
