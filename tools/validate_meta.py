@@ -10,6 +10,11 @@ Standard library only, Python 3.9+. Run from the repository root:
 
 Exit codes: 0 no errors, 1 errors found (or warnings with --strict), 2 usage error.
 
+Mechanical defects of the CSV files (blank lines, rows missing trailing empty
+fields, BOM, CRLF, sort order) are repaired by tools/fix_tables.py, which the
+workflow runs before this validator. What is still reported here is what needs
+a human decision.
+
 Check codes
     F###  file mechanics (encoding, line endings, trailing newline)
     M###  manifest.csv rows
@@ -17,6 +22,9 @@ Check codes
     D###  .ydk deck files and their legality under their own period list
     T###  deck_types.csv
     P###  period folders and their list files
+    C###  categories.md (the restriction-category taxonomy)
+    R###  restrictions.csv
+    V###  verdicts.csv
 """
 
 from __future__ import annotations
@@ -34,13 +42,31 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
-VALIDATOR_VERSION = "1.0.0"
+VALIDATOR_VERSION = "1.1.0"
 
 MANIFEST_COLUMNS = [
     "file", "kind", "date", "event", "event_type", "placement", "field_size",
     "record", "pilot", "deck_type", "engines", "list_period", "notes",
 ]
 DECK_TYPES_COLUMNS = ["deck_type", "aliases", "defining_cards", "description", "kind"]
+RESTRICTION_COLUMNS = [
+    "card_id", "card_name", "list_period", "status", "category", "rationale", "evidence",
+    "source", "notes",
+]
+VERDICT_COLUMNS = [
+    "verdict_id", "date", "list_period", "subject", "card_ids", "subject_kind", "question",
+    "verdict", "confidence", "authority", "category", "grounds", "anchors", "supersedes",
+    "variant_of", "notes",
+]
+CATEGORIES_FILE = "categories.md"
+STAPLES_FILE = "Staples.ydk"   # present only in the folders of periods where the staples changed
+
+RESTRICTION_STATUSES = {"0", "1", "2", "3", "absent"}
+VERDICT_VALUES = {"0", "1", "2", "3"}      # the copy limit decided; 0 = not eligible
+EVIDENCE_VALUES = {"stated", "inferred", "unknown"}
+CONFIDENCE_VALUES = {"high", "medium", "low"}
+AUTHORITY_VALUES = {"maintainer", "antonio", "claude"}
+SUBJECT_KINDS = {"official", "custom", "proposal", "package"}
 
 KINDS = {"tournament", "community", "brew", "reference"}
 EVENT_TYPES = {"Double-Elim", "Swiss", "Round Robin"}
@@ -53,6 +79,9 @@ RECORD_RE               = re.compile(r"^(\d+)-(\d+)-(\d+)$")
 LIST_HEADER_RE          = re.compile(r"^!(\d{4})\.(\d{2})\b")
 BARE_PASSCODE_RE        = re.compile(r"(?<!\w)\d{5,}(?!\w)")
 FORBIDDEN_NAME_CHARS    = set(";|&()#*!:")
+VERDICT_ID_RE           = re.compile(r"^V\d{3,}$")
+ID_LIST_RE              = re.compile(r"^\d+(;\d+)*$")
+CATEGORY_LABEL_RE       = re.compile(r"^[a-z][a-z0-9-]*$")
 
 NUMERIC_FIELDS = {"level", "rank", "link", "scale", "atk", "def"}
 ENUM_FIELDS = {
@@ -166,6 +195,10 @@ def check_text_mechanics(report: Report, rel: str, raw: bytes, *, require_bom: b
 
     if b"\r\n" in body:
         report.warn("F004", rel, None, "CRLF line endings; the repository uses LF")
+    if b"\r" in body.replace(b"\r\n", b""):
+        report.error("F008", rel, None,
+                     "bare CR line endings (classic Mac OS); the file reads as a single line. "
+                     "tools/fix_tables.py converts them to LF")
     if body and not body.endswith(b"\n"):
         report.error("F005", rel, None, "no trailing newline")
     if body.endswith(b"\n\n"):
@@ -202,6 +235,24 @@ def parse_lflist(text: str) -> Tuple[Optional[str], Dict[int, int], List[str]]:
         statuses[code] = status
 
     return header, statuses, problems
+
+
+def parse_lflist_comments(text: str) -> Dict[int, str]:
+    """Return {passcode: comment}; the comment is the card name in upper case."""
+    comments: Dict[int, str] = {}
+    for raw_line in text.splitlines():
+        match = re.match(r"^\s*(\d+)\s+-?\d+\s*--\s*(.*?)\s*$", raw_line)
+        if match:
+            comments[int(match.group(1))] = match.group(2)
+    return comments
+
+
+def norm_name(name: str) -> str:
+    """Card name normalised for comparison with list comments (case, accents, punctuation)."""
+    import unicodedata
+    text = unicodedata.normalize("NFKD", name or "")
+    text = "".join(ch for ch in text if not unicodedata.combining(ch))
+    return re.sub(r"[^0-9a-z]+", "", text.casefold())
 
 
 def parse_ydk(text: str) -> Tuple[Deck, List[Tuple[int, str]]]:
@@ -475,6 +526,7 @@ class Period:
     header: Optional[str]
     statuses: Dict[int, int]
     deck_files: Set[str] = field(default_factory=set)
+    comments: Dict[int, str] = field(default_factory=dict)
 
 
 def scan_periods(repo: Path, report: Report) -> Dict[str, Period]:
@@ -518,6 +570,8 @@ def scan_periods(repo: Path, report: Report) -> Dict[str, Period]:
             for problem in problems[:5]:
                 report.warn("P008", list_rel, None, f"unparsed list line: {problem}")
         period = Period(child.name, list_rel, header, statuses)
+        if list_path.exists():
+            period.comments = parse_lflist_comments(read_bytes(list_path).decode("utf-8", "replace"))
         for sub in sorted(child.rglob("*")):
             if sub.is_dir():
                 report.error("P009", f"{rel}/{sub.name}", None,
@@ -959,8 +1013,14 @@ def check_decks(rows: Sequence[ManifestRow], repo: Path, periods: Dict[str, Peri
                         "only the card pool resolves; a passcode that is neither an alternate "
                         "artwork nor listed is an illegal card")
 
+    for rel, previous in redundant_staples(repo, periods).items():
+        report.warn("D031", rel, None,
+                    f"identical to {previous}, the staples collection already in force; a period "
+                    f"folder holds {STAPLES_FILE} only when the staples changed. "
+                    "tools/fix_tables.py removes the copy and its manifest row")
+
     for digest, files in sorted(digests.items()):
-        if len(files) > 1:
+        if len(files) > 1 and not any(f.endswith("/" + STAPLES_FILE) for f in files):
             periods_involved = {f.split("/")[1] for f in files}
             level = report.warn if len(periods_involved) > 1 else report.error
             level("D030", files[0], None,
@@ -968,6 +1028,503 @@ def check_decks(rows: Sequence[ManifestRow], repo: Path, periods: Dict[str, Peri
                   f"{', '.join(files)}"
                   + ("; a file copied across periods misrepresents the later or earlier one"
                      if len(periods_involved) > 1 else ""))
+
+
+# --------------------------------------------------------------------------- #
+# CSV tables: shared reading (also used by fix_tables.py and build_bundle.py)
+# --------------------------------------------------------------------------- #
+
+@dataclass
+class TableSpec:
+    name        : str
+    columns     : List[str]
+    delimiter   : str
+    require_bom : bool
+    prefix      : str                        # check-code prefix of the file
+    sort_key    : Optional[object] = None    # callable(values dict) -> key, or None
+
+
+def _restriction_sort_key(values: Dict[str, str]):
+    card_id = values.get("card_id", "").strip()
+    return (values.get("list_period", "").strip(), values.get("card_name", "").strip().casefold(),
+            int(card_id) if card_id.isdigit() else -1)
+
+
+def _verdict_sort_key(values: Dict[str, str]):
+    vid = values.get("verdict_id", "").strip()
+    return (int(vid[1:]) if VERDICT_ID_RE.match(vid) else 10 ** 9, vid)
+
+
+def _deck_type_sort_key(values: Dict[str, str]):
+    return values.get("deck_type", "").strip().lower()
+
+
+TABLE_SPECS: Dict[str, TableSpec] = {
+    "manifest.csv": TableSpec("manifest.csv", MANIFEST_COLUMNS, ";", True, "M"),
+    "deck_types.csv": TableSpec("deck_types.csv", DECK_TYPES_COLUMNS, ",", False, "T",
+                                _deck_type_sort_key),
+    "restrictions.csv": TableSpec("restrictions.csv", RESTRICTION_COLUMNS, ",", False, "R",
+                                  _restriction_sort_key),
+    "verdicts.csv": TableSpec("verdicts.csv", VERDICT_COLUMNS, ",", False, "V",
+                              _verdict_sort_key),
+}
+
+
+@dataclass
+class Record:
+    line   : int              # first physical line of the record (1-based)
+    raw    : str              # the record's text, without its final newline
+    values : List[str]
+
+
+def normalise_newlines(text: str) -> str:
+    return text.replace("\r\n", "\n").replace("\r", "\n")
+
+
+def split_records(text: str, delimiter: str) -> List[Record]:
+    """Split CSV text into records, keeping each record's raw text so a fix can touch
+    one record without re-quoting the others. `text` must already use LF."""
+    lines = text.split("\n")
+    reader = csv.reader(io.StringIO(text), delimiter=delimiter)
+    out: List[Record] = []
+    previous = 0
+    for values in reader:
+        end = reader.line_num
+        out.append(Record(previous + 1, "\n".join(lines[previous:end]), values))
+        previous = end
+    return out
+
+
+def table_rows(spec: TableSpec, text: str) -> Tuple[List[str], List[Tuple[int, Dict[str, str], int]]]:
+    """(header, [(line, values padded to the header, raw field count)]); blank records skipped."""
+    records = split_records(normalise_newlines(text.lstrip("\ufeff")), spec.delimiter)
+    if not records:
+        return [], []
+    header = [h.strip() for h in records[0].values]
+    rows = []
+    for rec in records[1:]:
+        if not rec.values or all(not v.strip() for v in rec.values):
+            continue
+        padded = rec.values + [""] * (len(header) - len(rec.values))
+        rows.append((rec.line, dict(zip(header, padded)), len(rec.values)))
+    return header, rows
+
+
+def read_table(repo: Path, spec: TableSpec, report: Report
+               ) -> Optional[List[Tuple[int, Dict[str, str]]]]:
+    """Read one table with the checks every table shares. None when the file is absent."""
+    rel = spec.name
+    path = repo / rel
+    if not path.exists():
+        return None
+    # verdicts.csv uses V002 and V004 for its own checks
+    blank_code = "V014" if spec.prefix == "V" else f"{spec.prefix}002"
+    sort_code = "V013" if spec.prefix == "V" else f"{spec.prefix}004"
+    raw = read_bytes(path)
+    check_text_mechanics(report, rel, raw, require_bom=spec.require_bom)
+    text = normalise_newlines(raw.decode("utf-8-sig", "replace"))
+    records = split_records(text, spec.delimiter)
+    if not records:
+        report.error(f"{spec.prefix}001", rel, None, "file is empty")
+        return []
+    header = [h.strip() for h in records[0].values]
+    if header != spec.columns:
+        report.error(f"{spec.prefix}001", rel, 1,
+                     f"header must be exactly {spec.delimiter.join(spec.columns)}; found "
+                     f"{spec.delimiter.join(header)}")
+    out: List[Tuple[int, Dict[str, str]]] = []
+    seen: Dict[Tuple[str, ...], int] = {}
+    for rec in records[1:]:
+        if not rec.values or all(not v.strip() for v in rec.values):
+            report.error(blank_code, rel, rec.line, "blank line")
+            continue
+        if len(rec.values) != len(spec.columns):
+            extra_empty = (len(rec.values) > len(spec.columns)
+                           and all(not v.strip() for v in rec.values[len(spec.columns):]))
+            fixable = len(rec.values) < len(spec.columns) or extra_empty
+            report.error(f"{spec.prefix}001", rel, rec.line,
+                         f"{len(rec.values)} fields, expected {len(spec.columns)}"
+                         + ("; tools/fix_tables.py repairs this (missing or surplus empty "
+                            "trailing fields)" if fixable else
+                            "; the surplus fields are not empty, so a value is probably "
+                            "unquoted or misplaced"))
+            if not fixable:
+                continue
+        values = [v.strip() for v in rec.values[:len(spec.columns)]]
+        values += [""] * (len(spec.columns) - len(values))
+        key = tuple(values)
+        if key in seen:
+            report.error(blank_code, rel, rec.line,
+                         f"duplicate of the row on line {seen[key]}")
+        seen.setdefault(key, rec.line)
+        out.append((rec.line, dict(zip(spec.columns, values))))
+    if spec.sort_key and [spec.sort_key(v) for _, v in out] != sorted(spec.sort_key(v) for _, v in out):
+        report.warn(sort_code, rel, None,
+                    "rows are not in the documented sort order; tools/fix_tables.py sorts them")
+    return out
+
+
+# --------------------------------------------------------------------------- #
+# categories.md
+# --------------------------------------------------------------------------- #
+
+@dataclass
+class Category:
+    label      : str
+    basis      : str
+    definition : str
+
+
+def parse_categories(text: str) -> Tuple[List[Category], List[Tuple[int, str]]]:
+    """Read the first Markdown table whose first column holds the labels."""
+    out: List[Category] = []
+    problems: List[Tuple[int, str]] = []
+    in_table = False
+    for idx, line in enumerate(normalise_newlines(text.lstrip("\ufeff")).split("\n"), start=1):
+        stripped = line.strip()
+        if not stripped.startswith("|"):
+            if in_table and out:
+                break
+            continue
+        cells = [c.strip() for c in stripped.strip("|").split("|")]
+        if all(re.fullmatch(r":?-+:?", c) for c in cells if c):
+            in_table = True
+            continue
+        if not in_table:
+            continue                             # the header row
+        if len(cells) < 3:
+            problems.append((idx, f"row has {len(cells)} cells, expected 3"))
+            continue
+        label = cells[0].strip("`* ")
+        basis = cells[1].strip("* ")
+        definition = "|".join(cells[2:]).strip()
+        out.append(Category(label, basis, definition))
+    return out, problems
+
+
+def load_categories(repo: Path, report: Report, needed: bool) -> Optional[Set[str]]:
+    rel = CATEGORIES_FILE
+    path = repo / rel
+    if not path.exists():
+        if needed:
+            report.error("C000", rel, None,
+                         "file missing; restrictions.csv and verdicts.csv take their category "
+                         "vocabulary from it, so category values cannot be checked")
+        return None
+    raw = read_bytes(path)
+    check_text_mechanics(report, rel, raw, require_bom=False)
+    categories, problems = parse_categories(raw.decode("utf-8-sig", "replace"))
+    for line, problem in problems:
+        report.error("C001", rel, line, problem)
+    if not categories:
+        report.error("C001", rel, None, "no category table found (| label | basis | definition |)")
+        return None
+    labels: Set[str] = set()
+    for cat in categories:
+        if not CATEGORY_LABEL_RE.match(cat.label):
+            report.error("C002", rel, None,
+                         f"label {cat.label!r} must be lower case letters, digits and hyphens")
+        if cat.label in labels:
+            report.error("C003", rel, None, f"label {cat.label!r} is defined twice")
+        if not cat.definition:
+            report.error("C004", rel, None, f"label {cat.label!r} has no definition")
+        labels.add(cat.label)
+    if "unknown" not in labels:
+        report.warn("C005", rel, None,
+                    "no 'unknown' label; a row whose reason was never recorded has no honest value")
+    return labels
+
+
+# --------------------------------------------------------------------------- #
+# restrictions.csv
+# --------------------------------------------------------------------------- #
+
+def current_period(periods: Dict[str, "Period"], live_header: Optional[str]) -> Optional[str]:
+    """The live list's period when known, else the latest archived period."""
+    if live_header:
+        match = LIST_HEADER_RE.match(live_header)
+        if match:
+            return f"{match.group(1)}-{match.group(2)}"
+    return max(periods) if periods else None
+
+
+def list_status_text(statuses: Dict[int, int], code: int) -> str:
+    return "absent" if code not in statuses else str(statuses[code])
+
+
+def _name_suggestion(period: "Period", name: str, own: int) -> Optional[int]:
+    wanted = norm_name(name)
+    hits = [code for code, comment in period.comments.items()
+            if code != own and norm_name(comment) == wanted]
+    return hits[0] if len(hits) == 1 else None
+
+
+def check_restrictions(repo: Path, report: Report, periods: Dict[str, "Period"],
+                       live_statuses: Optional[Dict[int, int]], live_header: Optional[str],
+                       categories: Optional[Set[str]]) -> None:
+    spec = TABLE_SPECS["restrictions.csv"]
+    rel = spec.name
+    rows = read_table(repo, spec, report)
+    if rows is None:
+        report.note("R000", rel, None, "file absent: no restriction is explained")
+        return
+
+    by_key: Dict[Tuple[int, str], List[Tuple[int, Dict[str, str]]]] = {}
+    for line, v in rows:
+        card_id, period_name = v["card_id"], v["list_period"]
+        if not card_id.isdigit():
+            report.error("R010", rel, line, f"card_id {card_id!r} is not a passcode")
+            continue
+        if not PERIOD_RE.match(period_name):
+            report.error("R011", rel, line, f"list_period {period_name!r} is not YYYY-MM[-DD]")
+            continue
+        code = int(card_id)
+        by_key.setdefault((code, period_name), []).append((line, v))
+
+        if v["status"] not in RESTRICTION_STATUSES:
+            report.error("R012", rel, line,
+                         f"status {v['status']!r} is not one of 0, 1, 2, 3, absent")
+        if v["evidence"] not in EVIDENCE_VALUES:
+            report.error("R012", rel, line, f"evidence {v['evidence']!r} is not one of "
+                         f"{', '.join(sorted(EVIDENCE_VALUES))}")
+        if categories is not None and v["category"] not in categories:
+            report.error("R012", rel, line,
+                         f"category {v['category']!r} is not defined in {CATEGORIES_FILE}; add "
+                         "it there or use a defined label")
+        for column in ("card_name", "rationale"):
+            if not v[column]:
+                report.error("R012", rel, line, f"{column} is empty")
+            elif "\n" in v[column]:
+                report.error("R012", rel, line, f"{column} spans more than one line")
+        if v["rationale"].lower() == "unknown" and v["category"] not in ("", "unknown"):
+            report.error("R013", rel, line,
+                         f"category {v['category']!r} with rationale 'unknown': a ground without a reason")
+
+        period = periods.get(period_name)
+        if period is None:
+            report.warn("R015", rel, line,
+                        f"list_period {period_name} has no folder under decks/, so the row's "
+                        "status cannot be checked against its list")
+            continue
+        comment = period.comments.get(code)
+        if comment and v["card_name"] and norm_name(comment) != norm_name(v["card_name"]):
+            hint = _name_suggestion(period, v["card_name"], code)
+            report.warn("R014", rel, line,
+                        f"card_name {v['card_name']!r} but the {period_name} list names "
+                        f"{code} {comment!r}"
+                        + (f"; {v['card_name']!r} is {hint} on that list, so the passcode is "
+                           "probably wrong" if hint else
+                           "; list comments are sometimes out of date, check the passcode"))
+        listed = list_status_text(period.statuses, code)
+        if v["status"] in RESTRICTION_STATUSES and v["status"] != listed:
+            # Decisions are issued in batches before the whitelist is updated, so a row that
+            # disagrees with its own period's list is taken as right and the list as lagging.
+            report.note("R024", rel, line,
+                        f"{code} {v['card_name']}: decided status {v['status']}, the "
+                        f"{period_name} list file says {listed}; the row is taken as the decision "
+                        "and the list as not yet updated")
+
+    for (code, period_name), group in sorted(by_key.items()):
+        if len(group) < 2:
+            continue
+        period = periods.get(period_name)
+        detail = []
+        for line, v in group:
+            hint = _name_suggestion(period, v["card_name"], code) if period else None
+            detail.append(f"line {line} ({v['card_name']}"
+                          + (f", which is {hint} on the {period_name} list" if hint else "") + ")")
+        report.error("R003", rel, group[1][0],
+                     f"({code}, {period_name}) appears {len(group)} times: {'; '.join(detail)}. "
+                     "Only one row survives in the bundle")
+
+    now = current_period(periods, live_header)
+    if now is None:
+        return
+    statuses = live_statuses
+    source = "current SFFR list"
+    if statuses is None and now in periods:
+        statuses, source = periods[now].statuses, f"{now} list (latest archived period)"
+    if statuses is None:
+        return
+    archived_now = now in periods
+    latest: Dict[int, Tuple[int, Dict[str, str]]] = {}
+    for (code, period_name), group in sorted(by_key.items(), key=lambda kv: kv[0][1]):
+        if period_name <= now:
+            latest[code] = group[0]
+    level = report.error if archived_now else report.warn
+    for code, status in sorted(statuses.items()):
+        if status in (0, 1, 2) and code not in latest:
+            name = periods[now].comments.get(code, "") if archived_now else ""
+            level("R020", rel, None,
+                  f"{code} {name} is at status {status} on the {source} and has no row explaining it"
+                  + ("" if archived_now else
+                     f"; the live list ({now}) is newer than every archived period, so archive "
+                     "it under decks/ and add its rows"))
+    for code, (line, v) in sorted(latest.items()):
+        now_status = list_status_text(statuses, code)
+        if v["status"] != now_status and v["list_period"] != now:
+            report.warn("R022", rel, line,
+                        f"{code} {v['card_name']}: the latest row ({v['list_period']}) says "
+                        f"{v['status']}, the {source} says {now_status}; a row for the change is "
+                        "missing")
+
+
+# --------------------------------------------------------------------------- #
+# verdicts.csv
+# --------------------------------------------------------------------------- #
+
+def check_verdicts(repo: Path, report: Report, periods: Dict[str, "Period"],
+                   categories: Optional[Set[str]]) -> None:
+    spec = TABLE_SPECS["verdicts.csv"]
+    rel = spec.name
+    rows = read_table(repo, spec, report)
+    if rows is None:
+        report.note("V000", rel, None, "file absent: no verdict is recorded")
+        return
+    today = dt.date.today()
+    ids: Dict[str, int] = {}
+    decided: Dict[str, str] = {}
+    links: Dict[str, Dict[str, str]] = {}
+    by_cards: Dict[Tuple[str, ...], List[Tuple[int, Dict[str, str]]]] = {}
+    for line, v in rows:
+        vid = v["verdict_id"]
+        if not VERDICT_ID_RE.match(vid):
+            report.error("V002", rel, line, f"verdict_id {vid!r} is not V followed by 3+ digits")
+        elif vid in ids:
+            report.error("V002", rel, line, f"verdict_id {vid} is already used on line {ids[vid]}")
+        ids.setdefault(vid, line)
+        decided[vid] = v["verdict"]
+        links[vid] = {"supersedes": v["supersedes"], "variant_of": v["variant_of"], "line": str(line)}
+
+        if not DATE_RE.match(v["date"]):
+            report.error("V003", rel, line, f"date {v['date']!r} is not ISO YYYY-MM-DD")
+        else:
+            try:
+                if dt.date.fromisoformat(v["date"]) > today:
+                    report.error("V003", rel, line, f"date {v['date']} is in the future")
+            except ValueError as exc:
+                report.error("V003", rel, line, f"date {v['date']!r}: {exc}")
+        if not PERIOD_RE.match(v["list_period"]):
+            report.error("V003", rel, line, f"list_period {v['list_period']!r} is not YYYY-MM[-DD]")
+        elif v["list_period"] not in periods:
+            report.warn("V003", rel, line,
+                        f"list_period {v['list_period']} has no folder under decks/")
+
+        if v["verdict"] not in VERDICT_VALUES:
+            report.error("V004", rel, line,
+                         f"verdict {v['verdict']!r} is not a copy limit (0 = not eligible, 1, 2, 3)")
+        for column, allowed in (("confidence", CONFIDENCE_VALUES), ("authority", AUTHORITY_VALUES),
+                                ("subject_kind", SUBJECT_KINDS)):
+            if v[column] not in allowed:
+                report.error("V004", rel, line, f"{column} {v[column]!r} is not one of "
+                             f"{', '.join(sorted(allowed))}")
+        if v["category"]:
+            if categories is not None and v["category"] not in categories:
+                report.error("V011", rel, line,
+                             f"category {v['category']!r} is not defined in {CATEGORIES_FILE}")
+        elif v["verdict"] in ("0", "1", "2"):
+            report.error("V011", rel, line,
+                         f"verdict {v['verdict']} restricts the card but category is empty; "
+                         "use 'unknown' if the ground is not known")
+        for column in ("subject", "grounds"):
+            if not v[column]:
+                report.error("V005", rel, line, f"{column} is empty")
+            elif "\n" in v[column]:
+                report.error("V005", rel, line, f"{column} spans more than one line")
+
+        for column in ("card_ids", "anchors"):
+            if v[column] and not ID_LIST_RE.match(v[column]):
+                report.error("V006", rel, line,
+                             f"{column} {v[column]!r} must be passcodes separated by ';'")
+        card_ids = [int(c) for c in v["card_ids"].split(";") if c.isdigit()]
+        if not card_ids and v["subject_kind"] != "proposal":
+            report.error("V006", rel, line,
+                         "card_ids is empty; only a proposal that is in no database has no passcode")
+        if v["subject_kind"] == "package" and len(card_ids) < 2:
+            report.error("V007", rel, line, "a package verdict names at least two card_ids")
+
+        period = periods.get(v["list_period"])
+        if period and len(card_ids) == 1 and v["subject"]:
+            comment = period.comments.get(card_ids[0])
+            if comment and norm_name(comment) != norm_name(v["subject"]):
+                hint = _name_suggestion(period, v["subject"], card_ids[0])
+                report.warn("V012", rel, line,
+                            f"subject {v['subject']!r} but the {v['list_period']} list names "
+                            f"{card_ids[0]} {comment!r}"
+                            + (f"; {v['subject']!r} is {hint} on that list" if hint else ""))
+        if card_ids:
+            by_cards.setdefault(tuple(sorted(card_ids)), []).append((line, v))
+
+    for vid, link in links.items():
+        line = int(link["line"])
+        for column in ("supersedes", "variant_of"):
+            ref = link[column]
+            if not ref:
+                continue
+            if ref == vid:
+                report.error("V008", rel, line, f"{column} points at the row itself")
+            elif ref not in ids:
+                report.error("V008", rel, line, f"{column} {ref} names no recorded verdict")
+        ref = link["variant_of"]
+        if ref and ref in decided and decided[ref] != "0":
+            report.warn("V009", rel, line,
+                        f"variant_of {ref}, but {ref} is not a rejection (verdict {decided[ref]})")
+    for vid in links:                                   # cycles through supersedes
+        seen, cur = set(), vid
+        while cur and cur in links and cur not in seen:
+            seen.add(cur)
+            cur = links[cur]["supersedes"]
+        if cur == vid:
+            report.error("V008", rel, int(links[vid]["line"]), f"supersedes chain from {vid} is a cycle")
+    superseded = {link["supersedes"] for link in links.values() if link["supersedes"]}
+    for cards, group in sorted(by_cards.items()):
+        live = [(line, v) for line, v in group if v["verdict_id"] not in superseded]
+        verdicts = {v["verdict"] for _, v in live}
+        if len(verdicts) > 1:
+            report.warn("V010", rel, live[-1][0],
+                        f"cards {';'.join(map(str, cards))} carry different verdicts "
+                        f"({', '.join(sorted(verdicts))}) and neither supersedes the other: "
+                        + ", ".join(v["verdict_id"] for _, v in live))
+
+
+# --------------------------------------------------------------------------- #
+# Staples.ydk: one copy per change, inherited by later periods
+# --------------------------------------------------------------------------- #
+
+def staples_content(path: Path) -> Tuple[Tuple[int, ...], Tuple[int, ...]]:
+    """(Main+Side, Extra) as sorted passcodes. Main and Side placement carries no meaning
+    in the staples collection, so the two sections compare as one."""
+    deck, _ = parse_ydk(read_bytes(path).decode("utf-8", "replace"))
+    return tuple(sorted(deck.main + deck.side)), tuple(sorted(deck.extra))
+
+
+def staples_by_period(periods: Dict[str, "Period"]) -> Dict[str, str]:
+    """Every archived period -> the Staples.ydk in force for it: the one in its own folder,
+    else the nearest earlier folder that has one. Periods before the first copy are absent."""
+    out: Dict[str, str] = {}
+    current: Optional[str] = None
+    for name in sorted(periods):
+        candidate = f"decks/{name}/{STAPLES_FILE}"
+        if candidate in periods[name].deck_files:
+            current = candidate
+        if current:
+            out[name] = current
+    return out
+
+
+def redundant_staples(repo: Path, periods: Dict[str, "Period"]) -> Dict[str, str]:
+    """{Staples.ydk that repeats the collection in force before it: that earlier file}."""
+    out: Dict[str, str] = {}
+    previous: Optional[str] = None
+    for name in sorted(periods):
+        rel = f"decks/{name}/{STAPLES_FILE}"
+        if rel not in periods[name].deck_files:
+            continue
+        if previous and staples_content(repo / rel) == staples_content(repo / previous):
+            out[rel] = previous
+            continue                          # the earlier copy stays the one in force
+        previous = rel
+    return out
 
 
 # --------------------------------------------------------------------------- #
@@ -1038,10 +1595,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     report = Report()
     live_statuses: Optional[Dict[int, int]] = None
+    live_header: Optional[str] = None
     if args.live_lflist:
         live_path = Path(args.live_lflist)
         if live_path.exists():
-            _, live_statuses, _ = parse_lflist(live_path.read_text(encoding="utf-8", errors="replace"))
+            live_header, live_statuses, _ = parse_lflist(
+                live_path.read_text(encoding="utf-8", errors="replace"))
         else:
             report.warn("T097", str(live_path), None,
                         "current SFFR list not found; passcode checks skipped")
@@ -1052,6 +1611,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     check_rows(rows, repo, periods, deck_types, report)
     check_events(rows, report)
     check_decks(rows, repo, periods, report)
+    needs_categories = (repo / "restrictions.csv").exists() or (repo / "verdicts.csv").exists()
+    categories = load_categories(repo, report, needs_categories)
+    check_restrictions(repo, report, periods, live_statuses, live_header, categories)
+    check_verdicts(repo, report, periods, categories)
     return emit(report, args)
 
 

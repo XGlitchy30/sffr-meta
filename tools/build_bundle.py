@@ -9,8 +9,12 @@ The bundle contains the deck-type vocabulary, every manifest row with its deck
 contents, and each period's list statuses, so an archived deck can be judged
 against the list of its own period offline.
 
-The bundle is generated automatically. Regenerate it in the same commit
-as any change to manifest.csv, deck_types.csv or decks/.
+The bundle is generated automatically by the workflow on every push to main,
+after tools/fix_tables.py has repaired the tables. Top-level keys added after
+schema 1 was fixed (`categories`) are additive: a reader that does not know
+them ignores them, so the schema number is unchanged. `staples` maps every
+archived period to the Staples.ydk in force for it (its own folder's copy, else
+the nearest earlier one).
 """
 
 from __future__ import annotations
@@ -29,8 +33,9 @@ from typing import Any, Dict, List, Optional
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from validate_meta import (  # noqa: E402
-    DEFAULT_EVENT_TYPE, MANIFEST_COLUMNS, RECORD_RE, Report, load_deck_types,
-    load_manifest, parse_ydk, scan_periods,
+    CATEGORIES_FILE, DEFAULT_EVENT_TYPE, MANIFEST_COLUMNS, RECORD_RE, TABLE_SPECS, Report,
+    TableSpec, load_deck_types, load_manifest, parse_categories, parse_ydk, scan_periods,
+    staples_by_period, table_rows,
 )
 
 BUNDLE_SCHEMA = 1
@@ -59,13 +64,25 @@ def git_commit(repo: Path) -> Optional[str]:
 
 
 def read_csv_table(path: Path) -> List[Dict[str, str]]:
-    import csv
-    import io
+    """Rows keyed by the file's header, every key present: a row with fewer fields than
+    the header gets empty strings, so no reader has to tell a missing key from an empty
+    value. Blank lines are skipped."""
     text = path.read_bytes().decode("utf-8-sig", "replace")
-    delimiter = ";" if text.splitlines()[0].count(";") > text.splitlines()[0].count(",") else ","
-    rows = list(csv.reader(io.StringIO(text), delimiter=delimiter))
-    header = rows[0]
-    return [dict(zip(header, values)) for values in rows[1:] if any(v.strip() for v in values)]
+    spec = TABLE_SPECS.get(path.name)
+    if spec is None:
+        first = text.splitlines()[0] if text else ""
+        spec = TableSpec(path.name, [], ";" if first.count(";") > first.count(",") else ",",
+                         False, "X")
+    header, rows = table_rows(spec, text)
+    return [{k: (v or "").strip() for k, v in values.items()} for _, values, _ in rows]
+
+
+def read_categories(repo: Path) -> List[Dict[str, str]]:
+    path = repo / CATEGORIES_FILE
+    if not path.exists():
+        return []
+    categories, _ = parse_categories(path.read_bytes().decode("utf-8-sig", "replace"))
+    return [{"label": c.label, "basis": c.basis, "definition": c.definition} for c in categories]
 
 
 def build(repo: Path) -> Dict[str, Any]:
@@ -85,6 +102,8 @@ def build(repo: Path) -> Dict[str, Any]:
         "entries": [],
         "documents": {},
         "tables": {},
+        "categories": read_categories(repo),
+        "staples": staples_by_period(periods),
         "counts": {},
     }
 
@@ -157,6 +176,7 @@ def build(repo: Path) -> Dict[str, Any]:
         "entries_by_kind": dict(sorted(kinds.items())),
         "documents": sorted(bundle["documents"]),
         "tables": sorted(bundle["tables"]),
+        "categories": len(bundle["categories"]),
     }
     return bundle
 

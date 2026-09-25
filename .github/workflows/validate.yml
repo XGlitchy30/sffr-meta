@@ -1,8 +1,13 @@
 name: Validate and bundle
 
-# Validation runs on every push and pull request. bundle.json is regenerated and
-# committed only on pushes to main, by the Actions bot. A push made with
-# GITHUB_TOKEN does not trigger workflows again.
+# Every push and pull request: repair the tables' mechanical defects
+# (tools/fix_tables.py), validate the repository, and check that the bundle
+# builds. On pushes to main the repairs are committed back, whether or not
+# validation passes, so a missing trailing comma never has to be fixed by hand;
+# bundle.json is regenerated and committed only when validation passes.
+# The repairs include deleting a decks/<period>/Staples.ydk identical to the
+# collection already in force, since later periods inherit it.
+# A push made with GITHUB_TOKEN does not trigger workflows again.
 
 on:
   push:
@@ -14,9 +19,6 @@ on:
       - 'bundle.json'
   workflow_dispatch:
 
-permissions:
-  contents: read
-
 concurrency:
   group: validate-${{ github.ref }}
   cancel-in-progress: false
@@ -24,6 +26,10 @@ concurrency:
 jobs:
   validate:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      PUBLISH: ${{ github.event_name != 'pull_request' && github.ref == 'refs/heads/main' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -31,16 +37,20 @@ jobs:
         with:
           python-version: '3.12'
 
+      - name: Repair mechanical defects in the tables
+        run: python3 tools/fix_tables.py
+
       - name: Fetch the current SFFR list
-        id: lflist
         continue-on-error: true
         run: |
           curl -sSfL --retry 3 --max-time 60 \
             -o "$RUNNER_TEMP/sffr.lflist.conf" \
             https://raw.githubusercontent.com/XGlitchy30/StungrayFluteCustoms/main/lflists/sffr.lflist.conf
-          wc -l "$RUNNER_TEMP/sffr.lflist.conf"
+          head -n 1 "$RUNNER_TEMP/sffr.lflist.conf"
 
       - name: Validate the repository
+        id: validate
+        continue-on-error: true
         run: |
           ARGS=""
           if [ -f "$RUNNER_TEMP/sffr.lflist.conf" ]; then
@@ -50,9 +60,9 @@ jobs:
           fi
           python3 tools/validate_meta.py --json validation.json $ARGS
 
-      - name: Check that the bundle builds
-        if: always()
-        run: python3 tools/build_bundle.py --out "$RUNNER_TEMP/bundle.json"
+      - name: Build the bundle
+        if: steps.validate.outcome == 'success'
+        run: python3 tools/build_bundle.py --out bundle.json
 
       - uses: actions/upload-artifact@v4
         if: always()
@@ -61,30 +71,36 @@ jobs:
           path: validation.json
           if-no-files-found: ignore
 
-  bundle:
-    needs: validate
-    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-
-      - name: Regenerate bundle.json
-        run: python3 tools/build_bundle.py --out bundle.json
-
-      - name: Commit it if it changed
+      - name: Commit repairs and the regenerated bundle
+        if: env.PUBLISH == 'true'
         run: |
-          git add bundle.json
-          if git diff --cached --quiet -- bundle.json; then
-            echo "bundle.json unchanged"
-            exit 0
-          fi
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git commit -m "Regenerate bundle.json for ${GITHUB_SHA:0:7}"
-          git push
+          git add -A -- '*.csv' '*.md' 'decks/'
+          if [ "${{ steps.validate.outcome }}" = "success" ]; then
+            git add bundle.json
+          fi
+          if git diff --cached --quiet; then
+            echo "nothing to commit"
+            exit 0
+          fi
+          FIXED=$(git diff --cached --name-only -- '*.csv' '*.md' 'decks/' | tr '\n' ' ')
+          MSG="Regenerate bundle.json for ${GITHUB_SHA:0:7}"
+          if [ -n "$FIXED" ]; then
+            MSG="Auto-fix ${FIXED% }"
+            git diff --cached --quiet -- bundle.json || MSG="$MSG; regenerate bundle.json"
+            MSG="$MSG for ${GITHUB_SHA:0:7}"
+          fi
+          git commit -m "$MSG"
+          for attempt in 1 2 3; do
+            git pull --rebase --quiet && git push && exit 0
+            sleep $((attempt * 5))
+          done
+          echo "::error title=Push failed::could not push the repairs after three attempts"
+          exit 1
+
+      - name: Fail if validation failed
+        if: steps.validate.outcome != 'success'
+        run: |
+          echo "::error title=Validation failed::see the validation step; mechanical repairs (if any) were still committed"
+          exit 1

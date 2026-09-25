@@ -1,6 +1,5 @@
 ﻿file;kind;date;event;event_type;placement;field_size;record;pilot;deck_type;engines;list_period;notes
 decks/2026-08/Staples.ydk;reference;2026-08-01;;;;;;;;;;Format's staples collection as of August 2026
-decks/2026-09/Staples.ydk;reference;2026-09-25;;;;;;;;;;Format's staples collection as of September 2026
 decks/2026-03/Constellar.ydk;tournament;2026-03-06;Visions of Clairvoyance Cup;Swiss;2;8;3-2-0;Sock;Constellar;;2026-03;
 decks/2026-07/Shaddoll.ydk;tournament;2026-07-01;Leafplace Plaice Cup;Double-Elim;3;7;2-2-0;Ryuko;Shaddoll;;2026-07;
 decks/2026-07/Gem-Knight.ydk;tournament;2026-07-01;Leafplace Plaice Cup;Double-Elim;5;7;1-2-0;Nova;Gem-Knight;;2026-07;
